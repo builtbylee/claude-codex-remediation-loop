@@ -921,7 +921,7 @@ def main() -> int:
     max_implementation_iterations = args.max_implementation_iterations or args.max_iterations
     summary = run_loop(plan, workspace, max_plan_iterations, max_implementation_iterations)
     print(json.dumps(summary, indent=2))
-    return 0 if summary["status"] == "stop_resolved" else 1
+    return 1 if summary["status"] == "failed" else 0
 
 
 if __name__ == "__main__":

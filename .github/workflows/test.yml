@@ -27,6 +27,7 @@ jobs:
           test -f "$HOME/.claude/agents/codex-remediation-loop.md"
           test -f "$HOME/.claude/hooks/codex_plan_review.py"
           test -f "$HOME/.claude/tools/codex-remediation-loop/codex_remediation_loop.py"
+          test -f "$HOME/.claude/tools/codex-remediation-loop/schemas/plan-edit.schema.json"
           test -f "$HOME/.claude/settings.json"
 
           ./install.sh
