@@ -1,11 +1,14 @@
 # Claude Codex Remediation Loop
 
+[![Test](https://github.com/builtbylee/claude-codex-remediation-loop/actions/workflows/test.yml/badge.svg)](https://github.com/builtbylee/claude-codex-remediation-loop/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](./LICENSE)
+
 Make Claude Code work against an independent verifier instead of its own self-confidence.
 
-This package gives you two Claude Code agents:
-
-- `codex-plan-review`: get a Codex second opinion on a Markdown plan before you approve it
-- `codex-remediation-loop`: run a bounded `review -> implement -> verify` loop where Codex reviews, Claude edits, and Codex verifies the real diff
+| Agent | Best for | Result |
+| --- | --- | --- |
+| `codex-plan-review` | Getting a second opinion before approval | Codex reviews the plan and returns findings |
+| `codex-remediation-loop` | Driving a risky plan to completion | Codex reviews, Claude edits, Codex verifies, controller stops on resolution or failure |
 
 ## Why Use It
 
@@ -39,15 +42,23 @@ In Claude Code:
 ## Remediation Loop Workflow
 
 ```mermaid
-flowchart LR
-    A["Plan file"] --> B["Codex review<br/>structured findings"]
-    B --> C["Claude implementation pass"]
-    C --> D["Validation<br/>test, lint, build"]
-    D --> E["Codex verification<br/>diff + validation output"]
-    E --> F{"Resolved?"}
-    F -- Yes --> G["Stop: resolved"]
-    F -- No --> H{"Blocked, stagnating,<br/>or iteration 5?"}
-    H -- Yes --> I["Stop: explicit reason"]
+flowchart TD
+    classDef plan fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px;
+    classDef codex fill:#f3e8ff,stroke:#7c3aed,stroke-width:1.5px;
+    classDef claude fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px;
+    classDef checks fill:#fef3c7,stroke:#d97706,stroke-width:1.5px;
+    classDef decision fill:#f3f4f6,stroke:#6b7280,stroke-width:1.5px;
+    classDef done fill:#dcfce7,stroke:#15803d,stroke-width:1.5px;
+    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:1.5px;
+
+    A["Plan file"]:::plan --> B["Codex review<br/>Structured findings"]:::codex
+    B --> C["Claude remediation pass<br/>Edits only"]:::claude
+    C --> D["Validation<br/>Test, lint, build"]:::checks
+    D --> E["Codex verification<br/>Diff + validation output"]:::codex
+    E --> F{"All must-fix findings resolved?"}:::decision
+    F -- Yes --> G["Stop: resolved"]:::done
+    F -- No --> H{"Blocked, stagnating,<br/>or iteration = 5?"}:::decision
+    H -- Yes --> I["Stop: explicit reason"]:::stop
     H -- No --> C
 ```
 
