@@ -1,39 +1,31 @@
 # Claude Codex Remediation Loop
 
-Safe Claude Code + Codex workflows for plan review and bounded autonomous remediation.
+Make Claude Code work against an independent verifier instead of its own self-confidence.
 
 This package gives you two Claude Code agents:
 
-- `codex-plan-review`: one-shot Codex second opinion on a Markdown plan
-- `codex-remediation-loop`: bounded `review -> implement -> verify` loop with a hard stop at 5 iterations
+- `codex-plan-review`: get a Codex second opinion on a Markdown plan before you approve it
+- `codex-remediation-loop`: run a bounded `review -> implement -> verify` loop where Codex reviews, Claude edits, and Codex verifies the real diff
 
-## Requirements
+## Why Use It
 
-- `python3`
-- `claude` CLI installed and logged in
-- `codex` CLI installed and logged in
+- independent review instead of self-approval
+- bounded automation with a hard stop at 5 iterations
+- verification against actual file changes and validation output
+- explicit failure modes: blocked, stagnating, max-iterations, review unavailable
+- safe defaults: Codex runs `read-only`; Claude implementer gets edit tools only
 
 ## Install
-
-Quick install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/builtbylee/claude-codex-remediation-loop/main/install.sh | bash
 ```
 
-Local install from a clone:
+Requirements:
 
-```bash
-./install.sh
-```
-
-What it installs:
-
-- `~/.claude/agents/codex-plan-review.md`
-- `~/.claude/agents/codex-remediation-loop.md`
-- `~/.claude/hooks/codex_plan_review.py`
-- `~/.claude/tools/codex-remediation-loop/`
-- automatic plan-review hook merged into `~/.claude/settings.json`
+- `python3`
+- `claude` CLI installed and logged in
+- `codex` CLI installed and logged in
 
 ## Verify
 
@@ -44,15 +36,30 @@ In Claude Code:
    - `codex-plan-review`
    - `codex-remediation-loop`
 
+## Remediation Loop Workflow
+
+```mermaid
+flowchart LR
+    A["Plan file"] --> B["Codex review<br/>structured findings"]
+    B --> C["Claude implementation pass"]
+    C --> D["Validation<br/>test, lint, build"]
+    D --> E["Codex verification<br/>diff + validation output"]
+    E --> F{"Resolved?"}
+    F -- Yes --> G["Stop: resolved"]
+    F -- No --> H{"Blocked, stagnating,<br/>or iteration 5?"}
+    H -- Yes --> I["Stop: explicit reason"]
+    H -- No --> C
+```
+
 ## Use
 
-One-shot review:
+One-shot plan review:
 
 ```text
 Use the codex-plan-review subagent to review /absolute/path/to/PLAN.md
 ```
 
-Bounded remediation loop:
+Full remediation loop:
 
 ```text
 Use the codex-remediation-loop subagent to run the remediation loop for /absolute/path/to/PLAN.md
@@ -67,30 +74,17 @@ python3 ~/.claude/tools/codex-remediation-loop/codex_remediation_loop.py loop \
   --max-iterations 5
 ```
 
-## Behavior
+## What Gets Installed
 
-### `codex-plan-review`
-
-- reads the real plan file from disk
-- runs `codex exec` in `read-only`
-- never uses dangerous sandbox bypass flags
-- injects the second opinion back into Claude Code via structured hook output
-
-### `codex-remediation-loop`
-
-- Codex reviews the plan
-- Claude implements against the findings
-- validation commands run automatically
-- Codex verifies the actual diff and validation output
-- loop stops on:
-  - resolved
-  - blocked
-  - stagnation
-  - iteration 5
+- `~/.claude/agents/codex-plan-review.md`
+- `~/.claude/agents/codex-remediation-loop.md`
+- `~/.claude/hooks/codex_plan_review.py`
+- `~/.claude/tools/codex-remediation-loop/`
+- automatic plan-review hook merged into `~/.claude/settings.json`
 
 ## Workspace Overrides
 
-If auto-detected validation commands are wrong for a repo, add one of:
+If validation auto-detection is wrong for a repo, add either:
 
 - `.claude-codex-loop.json`
 - `.claude/codex-remediation-loop.json`
@@ -109,13 +103,13 @@ Example:
 }
 ```
 
-## Security Properties
+## Safety Model
 
 - Codex runs in `read-only`
-- Claude implementer has edit tools only; no shell access
-- failures are explicit
-- no silent “second opinion happened” behavior
-- plan review cache is content-hash keyed
+- Claude implementer does not get shell access
+- plan review reads the real plan file, not a Claude summary
+- failures are explicit; the system does not pretend a review happened
+- review results are cached by content hash
 
 ## Uninstall
 
@@ -128,13 +122,3 @@ Or locally:
 ```bash
 ./uninstall.sh
 ```
-
-## Repo Layout
-
-- `agents/`: Claude Code agents installed into `~/.claude/agents`
-- `hooks/`: safe automatic plan-review hook
-- `tools/codex-remediation-loop/`: bounded controller + JSON schemas
-- `skills/`: optional skill metadata and docs
-- `.claude-plugin/`: optional plugin manifest
-- `scripts/`: installer and uninstaller
-- `tests/`: unit tests
