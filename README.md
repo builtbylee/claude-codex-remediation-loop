@@ -7,26 +7,6 @@ This package gives you two Claude Code agents:
 - `codex-plan-review`: one-shot Codex second opinion on a Markdown plan
 - `codex-remediation-loop`: bounded `review -> implement -> verify` loop with a hard stop at 5 iterations
 
-## Best Packaging Model
-
-Not plugin-only.
-
-Plugin metadata helps discovery, but it does not install the user-level Claude assets that make this work:
-
-- `~/.claude/agents`
-- `~/.claude/hooks`
-- `~/.claude/tools`
-- `~/.claude/settings.json`
-
-So the best distribution is:
-
-1. public GitHub repo
-2. one-command installer
-3. one-command uninstaller
-4. optional plugin manifest for discovery
-
-That is what this repo ships.
-
 ## Requirements
 
 - `python3`
