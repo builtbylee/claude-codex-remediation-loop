@@ -41,26 +41,7 @@ In Claude Code:
 
 ## Remediation Loop Workflow
 
-```mermaid
-flowchart TD
-    classDef plan fill:#e0f2fe,stroke:#0284c7,stroke-width:1.5px;
-    classDef codex fill:#f3e8ff,stroke:#7c3aed,stroke-width:1.5px;
-    classDef claude fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px;
-    classDef checks fill:#fef3c7,stroke:#d97706,stroke-width:1.5px;
-    classDef decision fill:#f3f4f6,stroke:#6b7280,stroke-width:1.5px;
-    classDef done fill:#dcfce7,stroke:#15803d,stroke-width:1.5px;
-    classDef stop fill:#fee2e2,stroke:#dc2626,stroke-width:1.5px;
-
-    A["Plan file"]:::plan --> B["Codex review<br/>Structured findings"]:::codex
-    B --> C["Claude remediation pass<br/>Edits only"]:::claude
-    C --> D["Validation<br/>Test, lint, build"]:::checks
-    D --> E["Codex verification<br/>Diff + validation output"]:::codex
-    E --> F{"All must-fix findings resolved?"}:::decision
-    F -- Yes --> G["Stop: resolved"]:::done
-    F -- No --> H{"Blocked, stagnating,<br/>or iteration = 5?"}:::decision
-    H -- Yes --> I["Stop: explicit reason"]:::stop
-    H -- No --> C
-```
+![Remediation loop workflow](./assets/remediation-loop.svg)
 
 ## Use
 
