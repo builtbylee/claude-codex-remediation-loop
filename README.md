@@ -41,7 +41,7 @@ In Claude Code:
    - `codex-remediation-loop`
 3. if they do not appear immediately, restart Claude Code once and run `/agents` again
 
-![Claude Code agents view](./assets/agents-view.png)
+<img src="./assets/agents-view.png" alt="Claude Code /agents view showing codex-plan-review and codex-remediation-loop" width="860" />
 
 ## Remediation Loop Workflow
 
