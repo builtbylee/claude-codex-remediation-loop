@@ -82,9 +82,9 @@ def main() -> int:
     copy_tree(ROOT / "tools" / "codex-remediation-loop", TOOLS_DIR)
     settings = ensure_hook(read_json(SETTINGS_PATH))
     write_json(SETTINGS_PATH, settings)
-    print("Installed Claude/Codex remediation workflow into ~/.claude")
-    print("Run /agents in Claude Code and look for codex-plan-review and codex-remediation-loop.")
+    print("Installed Claudex into ~/.claude")
     print("Run /claudex <plan-path> in Claude Code to trigger the full workflow.")
+    print("Run /agents if you want to inspect the underlying codex-plan-review and codex-remediation-loop agents.")
     return 0
 
 

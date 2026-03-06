@@ -67,7 +67,7 @@ def main() -> int:
         shutil.rmtree(TOOLS_DIR)
     settings = remove_hook(read_json(SETTINGS_PATH))
     write_json(SETTINGS_PATH, settings)
-    print("Removed Claude/Codex remediation workflow from ~/.claude")
+    print("Removed Claudex from ~/.claude")
     return 0
 
 

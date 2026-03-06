@@ -5,10 +5,20 @@
 
 Claudex gives Claude Code an independent Codex reviewer so plans and implementations are checked before they ship.
 
-| Agent | Best for | Result |
-| --- | --- | --- |
-| `codex-plan-review` | Getting a second opinion before approval | Codex reviews the plan and returns findings |
-| `codex-remediation-loop` | Driving a risky plan all the way through planning and implementation | Codex refines and approves the plan, Claude implements against the frozen approved plan, Codex verifies the actual diff |
+Primary entrypoint:
+
+```text
+/claudex /absolute/path/to/PLAN.md
+```
+
+What `/claudex` does:
+
+- Claude drafts the plan
+- Codex reviews and edits the plan until it is approval-ready, then freezes it
+- Claude implements against the frozen approved plan
+- validation runs
+- Codex verifies the actual diff and validation output against the frozen approved plan
+- if issues remain, the remediation loop repeats until resolved or it stops explicitly
 
 ## Why Claudex
 
@@ -16,6 +26,8 @@ Claudex gives Claude Code an independent Codex reviewer so plans and implementat
 - bounded automation with a hard stop at 5 plan iterations and 5 implementation iterations
 - Codex can rewrite the plan directly before any code work starts
 - implementation is verified against the frozen approved plan, actual file changes, and validation output
+- repeated runs are faster because approved-plan reuse is cached by plan hash
+- non-build validation commands run concurrently to reduce loop latency without weakening the final gate
 - explicit failure modes: blocked, stagnating, max-iterations, review unavailable
 - safe defaults: Codex edits the plan only; Claude edits code only; validation is controller-owned
 
@@ -51,16 +63,24 @@ In Claude Code:
 
 ## Use
 
+Primary command:
+
+```text
+/claudex /absolute/path/to/PLAN.md
+```
+
+## Advanced / Manual Entry Points
+
+| Component | Best for | Result |
+| --- | --- | --- |
+| `/claudex` | Running the full two-phase workflow from Claude Code | Codex refines and approves the plan, Claude implements against the frozen approved plan, Codex verifies the actual diff |
+| `codex-plan-review` | Getting a one-shot second opinion before approval | Codex reviews the plan and returns findings |
+| `codex-remediation-loop` | Running the same workflow through the subagent instead of the slash command | Same two-phase plan approval and implementation verification loop |
+
 One-shot plan review:
 
 ```text
 Use the codex-plan-review subagent to review /absolute/path/to/PLAN.md
-```
-
-Full two-phase remediation loop:
-
-```text
-/claudex /absolute/path/to/PLAN.md
 ```
 
 Equivalent subagent invocation:
@@ -115,7 +135,7 @@ Example:
 - the approved plan is frozen before implementation starts
 - if Claude mutates the frozen plan during implementation, the controller restores it and flags it as a regression
 - failures are explicit; the system does not pretend a review happened
-- review results are cached by content hash for one-shot plan review
+- one-shot reviews and approved-plan reuse are cached by content hash
 
 ## Uninstall
 

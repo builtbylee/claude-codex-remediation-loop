@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import difflib
 import hashlib
 import json
@@ -22,6 +23,7 @@ DEFAULT_VALIDATION_TIMEOUT_SECONDS = 300
 DEFAULT_MAX_PROMPT_CHARS = 30_000
 DEFAULT_STATE_ROOT = Path.home() / ".claude" / "state" / "codex-remediation-loop"
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,MultiEdit,Glob,Grep"
+PLAN_CACHE_VERSION = "2026-03-06"
 IGNORE_DIRS = {
     ".git",
     ".idea",
@@ -75,6 +77,97 @@ def write_text(path: Path, text: str) -> None:
 
 def relative_schema_dir() -> Path:
     return Path(__file__).resolve().parent / "schemas"
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def plan_cache_key(plan_body: str, codex_model: str) -> str:
+    return sha256_text(f"{PLAN_CACHE_VERSION}\n{codex_model}\n{plan_body}")
+
+
+def plan_cache_path(key: str) -> Path:
+    return DEFAULT_STATE_ROOT / "plan-cache" / f"{key}.json"
+
+
+def load_plan_cache(*, plan_body: str, codex_model: str) -> dict[str, Any] | None:
+    path = plan_cache_path(plan_cache_key(plan_body, codex_model))
+    if not path.exists():
+        return None
+    loaded = read_json(path)
+    approved_plan_body = loaded.get("approved_plan_body")
+    approved_plan_sha256 = loaded.get("approved_plan_sha256")
+    if not isinstance(approved_plan_body, str) or not isinstance(approved_plan_sha256, str):
+        return None
+    if sha256_text(approved_plan_body) != approved_plan_sha256:
+        return None
+    return loaded
+
+
+def write_plan_cache(*, source_plan_body: str, approved_plan_body: str, codex_model: str) -> None:
+    payload = {
+        "cache_version": PLAN_CACHE_VERSION,
+        "cached_at": utc_now(),
+        "codex_model": codex_model,
+        "source_plan_sha256": sha256_text(source_plan_body),
+        "approved_plan_body": approved_plan_body,
+        "approved_plan_sha256": sha256_text(approved_plan_body),
+    }
+    cache_keys = {plan_cache_key(source_plan_body, codex_model), plan_cache_key(approved_plan_body, codex_model)}
+    for key in cache_keys:
+        write_json(plan_cache_path(key), payload)
+
+
+def compact_plan_review(review: dict[str, Any] | None) -> dict[str, Any] | None:
+    if review is None:
+        return None
+    return {
+        "iteration": review.get("iteration"),
+        "overall_status": review.get("overall_status"),
+        "summary": review.get("summary"),
+        "must_fix_count": plan_must_fix_count(review),
+        "findings": [
+            {
+                "id": item.get("id"),
+                "severity": item.get("severity"),
+                "title": item.get("title"),
+                "acceptance_criteria": item.get("acceptance_criteria", []),
+            }
+            for item in review.get("findings", [])[:8]
+        ],
+        "next_actions": review.get("next_actions", [])[:8],
+    }
+
+
+def compact_verification(verification: dict[str, Any] | None) -> dict[str, Any] | None:
+    if verification is None:
+        return None
+    return {
+        "iteration": verification.get("iteration"),
+        "overall_status": verification.get("overall_status"),
+        "ready_to_approve": verification.get("ready_to_approve"),
+        "validation_status": verification.get("validation_status"),
+        "summary": verification.get("summary"),
+        "unresolved": [
+            {
+                "id": item.get("id"),
+                "severity": item.get("severity"),
+                "reason": item.get("reason"),
+                "missing_acceptance_criteria": item.get("missing_acceptance_criteria", []),
+            }
+            for item in verification.get("unresolved", [])[:8]
+        ],
+        "regressions": [
+            {
+                "id": item.get("id"),
+                "severity": item.get("severity"),
+                "reason": item.get("reason"),
+            }
+            for item in verification.get("regressions", [])[:8]
+        ],
+        "next_actions": verification.get("next_actions", [])[:8],
+    }
 
 
 def workspace_config_path(workspace: Path) -> Path | None:
@@ -317,12 +410,8 @@ def detect_validation_commands(workspace: Path, config: dict[str, Any]) -> list[
     return commands
 
 
-def run_validation_commands(workspace: Path, commands: list[dict[str, str]], timeout_seconds: int) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
-    if not commands:
-        return {"status": "skipped", "commands": results}
-    overall_passed = True
-    for entry in commands:
+def run_validation_command(workspace: Path, entry: dict[str, str], timeout_seconds: int) -> dict[str, Any]:
+    try:
         completed = subprocess.run(
             entry["command"],
             cwd=str(workspace),
@@ -332,18 +421,54 @@ def run_validation_commands(workspace: Path, commands: list[dict[str, str]], tim
             timeout=timeout_seconds,
             check=False,
         )
-        passed = completed.returncode == 0
-        overall_passed = overall_passed and passed
-        results.append(
-            {
-                "kind": entry["kind"],
-                "command": entry["command"],
-                "passed": passed,
-                "exit_code": completed.returncode,
-                "stdout_tail": completed.stdout[-4_000:],
-                "stderr_tail": completed.stderr[-4_000:],
+        return {
+            "kind": entry["kind"],
+            "command": entry["command"],
+            "passed": completed.returncode == 0,
+            "exit_code": completed.returncode,
+            "stdout_tail": completed.stdout[-4_000:],
+            "stderr_tail": completed.stderr[-4_000:],
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "kind": entry["kind"],
+            "command": entry["command"],
+            "passed": False,
+            "exit_code": None,
+            "stdout_tail": (exc.stdout or "")[-4_000:] if isinstance(exc.stdout, str) else "",
+            "stderr_tail": (exc.stderr or "")[-4_000:] if isinstance(exc.stderr, str) else "",
+            "error": f"Timed out after {timeout_seconds}s",
+        }
+
+
+def run_validation_commands(workspace: Path, commands: list[dict[str, str]], timeout_seconds: int) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    if not commands:
+        return {"status": "skipped", "commands": results}
+    indexed_commands = list(enumerate(commands))
+    parallel_commands = [(index, entry) for index, entry in indexed_commands if entry.get("kind") != "build"]
+    sequential_commands = [(index, entry) for index, entry in indexed_commands if entry.get("kind") == "build"]
+    result_map: dict[int, dict[str, Any]] = {}
+
+    if parallel_commands:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(parallel_commands))) as executor:
+            future_map = {
+                executor.submit(run_validation_command, workspace, entry, timeout_seconds): index
+                for index, entry in parallel_commands
             }
-        )
+            for future in concurrent.futures.as_completed(future_map):
+                result = future.result()
+                result_map[future_map[future]] = result
+
+    for index, entry in sequential_commands:
+        result = run_validation_command(workspace, entry, timeout_seconds)
+        result_map[index] = result
+
+    overall_passed = True
+    for index, _entry in indexed_commands:
+        result = result_map[index]
+        overall_passed = overall_passed and bool(result["passed"])
+        results.append(result)
     return {"status": "passed" if overall_passed else "failed", "commands": results}
 
 
@@ -371,8 +496,8 @@ def plan_review_prompt(
         f"{truncation}"
         "Current plan excerpt:\n"
         f"{current_plan_body}\n\n"
-        "Previous Codex plan review:\n"
-        f"{json.dumps(latest_plan_review, indent=2) if latest_plan_review else 'null'}"
+        "Previous Codex plan review summary:\n"
+        f"{json.dumps(compact_plan_review(latest_plan_review), indent=2) if latest_plan_review else 'null'}"
     )
 
 
@@ -383,9 +508,7 @@ def implementation_prompt(
     latest_verification: dict[str, Any] | None,
     iteration: int,
 ) -> str:
-    unresolved = [] if latest_verification is None else latest_verification.get("unresolved", [])
-    regressions = [] if latest_verification is None else latest_verification.get("regressions", [])
-    next_actions = [] if latest_verification is None else latest_verification.get("next_actions", [])
+    verification_summary = compact_verification(latest_verification)
     verification_context = (
         "This is the first implementation pass. Focus on implementing the frozen approved plan completely.\n"
         if latest_verification is None
@@ -404,12 +527,8 @@ def implementation_prompt(
         f"{verification_context}\n"
         "Frozen approved plan:\n"
         f"{approved_plan_body}\n\n"
-        "Open unresolved findings from implementation verification:\n"
-        f"{json.dumps(unresolved, indent=2)}\n\n"
-        "Current regressions:\n"
-        f"{json.dumps(regressions, indent=2)}\n\n"
-        "Codex next actions:\n"
-        f"{json.dumps(next_actions, indent=2)}"
+        "Latest verification summary:\n"
+        f"{json.dumps(verification_summary, indent=2) if verification_summary else 'null'}"
     )
 
 
@@ -435,8 +554,8 @@ def verification_prompt(
         f"Frozen plan mutated during implementation pass: {str(plan_mutation_detected).lower()}\n\n"
         "Frozen approved plan:\n"
         f"{approved_plan_body}\n\n"
-        "Previous implementation verification:\n"
-        f"{json.dumps(latest_verification, indent=2) if latest_verification else 'null'}\n\n"
+        "Previous implementation verification summary:\n"
+        f"{json.dumps(compact_verification(latest_verification), indent=2) if latest_verification else 'null'}\n\n"
         "Validation results:\n"
         f"{json.dumps(validation, indent=2)}\n\n"
         "Changed files:\n"
@@ -606,7 +725,7 @@ def append_plan_mutation_regression(verification: dict[str, Any], plan_path: Pat
 def write_final_summary(paths: RunPaths, summary: dict[str, Any]) -> None:
     write_json(paths.final_summary_json, summary)
     lines = [
-        "# Codex Remediation Loop",
+        "# Claudex",
         "",
         f"Status: {summary.get('status')}",
         "",
@@ -620,6 +739,8 @@ def write_final_summary(paths: RunPaths, summary: dict[str, Any]) -> None:
         "",
         f"Unresolved must-fix: {summary.get('unresolved_must_fix_count', 0)}",
     ]
+    if "plan_cache_hit" in summary:
+        lines.extend(["", f"Plan cache hit: {str(bool(summary['plan_cache_hit'])).lower()}"])
     if summary.get("approved_plan_path"):
         lines.extend(["", f"Approved plan: {summary['approved_plan_path']}"])
     write_text(paths.final_summary_md, "\n".join(lines) + "\n")
@@ -641,12 +762,32 @@ def run_loop(
     codex_model = str(config.get("codex_model") or DEFAULT_CODEX_MODEL)
     claude_model = str(config.get("claude_model") or DEFAULT_CLAUDE_MODEL)
     allowed_tools = str(config.get("claude_allowed_tools") or DEFAULT_ALLOWED_TOOLS)
+    original_plan_body = plan.read_text(encoding="utf-8")
+    plan_cache = load_plan_cache(plan_body=original_plan_body, codex_model=codex_model)
 
     plan_reviews: list[dict[str, Any]] = []
     approved_plan_body: str | None = None
     approved_plan_meta: dict[str, Any] | None = None
+    plan_cache_hit = False
+
+    if plan_cache is not None:
+        approved_plan_body = str(plan_cache["approved_plan_body"])
+        approved_plan_meta = freeze_approved_plan(paths, plan, approved_plan_body, plan_iteration=0, codex_model=codex_model)
+        approved_plan_meta["plan_cache_hit"] = True
+        write_json(paths.approved_plan_meta, approved_plan_meta)
+        write_json(
+            paths.root / "plan-phase" / "cache-hit.json",
+            {
+                "cached_at": plan_cache.get("cached_at"),
+                "source_plan_sha256": plan_cache.get("source_plan_sha256"),
+                "approved_plan_sha256": plan_cache.get("approved_plan_sha256"),
+            },
+        )
+        plan_cache_hit = True
 
     for iteration in range(1, max_plan_iterations + 1):
+        if approved_plan_body is not None and approved_plan_meta is not None:
+            break
         iteration_dir = paths.plan_iteration_dir(iteration)
         sandbox_root = iteration_dir / "sandbox"
         sandbox_plan = stage_plan_workspace(plan, sandbox_root)
@@ -677,6 +818,7 @@ def run_loop(
                 "plan_iterations_used": iteration - 1,
                 "implementation_iterations_used": 0,
                 "unresolved_must_fix_count": plan_must_fix_count(plan_reviews[-1]) if plan_reviews else 0,
+                "plan_cache_hit": plan_cache_hit,
             }
             write_final_summary(paths, summary)
             return summary
@@ -698,6 +840,7 @@ def run_loop(
         if decision["action"] == "approve_plan":
             approved_plan_body = updated_plan_body
             approved_plan_meta = freeze_approved_plan(paths, plan, approved_plan_body, plan_iteration=iteration, codex_model=codex_model)
+            write_plan_cache(source_plan_body=original_plan_body, approved_plan_body=approved_plan_body, codex_model=codex_model)
             break
         if decision["action"] != "continue":
             summary = {
@@ -707,6 +850,7 @@ def run_loop(
                 "plan_iterations_used": iteration,
                 "implementation_iterations_used": 0,
                 "unresolved_must_fix_count": plan_must_fix_count(review_data),
+                "plan_cache_hit": plan_cache_hit,
             }
             write_final_summary(paths, summary)
             return summary
@@ -719,6 +863,7 @@ def run_loop(
             "plan_iterations_used": max_plan_iterations,
             "implementation_iterations_used": 0,
             "unresolved_must_fix_count": plan_must_fix_count(plan_reviews[-1]) if plan_reviews else 0,
+            "plan_cache_hit": plan_cache_hit,
         }
         write_final_summary(paths, summary)
         return summary
@@ -756,6 +901,7 @@ def run_loop(
                 "implementation_iterations_used": iteration - 1,
                 "unresolved_must_fix_count": unresolved_must_fix_count(latest_verification) if latest_verification else 0,
                 "approved_plan_path": str(paths.approved_plan),
+                "plan_cache_hit": plan_cache_hit,
             }
             write_final_summary(paths, summary)
             return summary
@@ -834,6 +980,7 @@ def run_loop(
                     "implementation_iterations_used": iteration - 1,
                     "unresolved_must_fix_count": unresolved_must_fix_count(latest_verification) if latest_verification else 0,
                     "approved_plan_path": str(paths.approved_plan),
+                    "plan_cache_hit": plan_cache_hit,
                 }
                 write_final_summary(paths, summary)
                 return summary
@@ -866,6 +1013,7 @@ def run_loop(
                 "latest_summary": verification_data.get("summary"),
                 "approved_plan_path": str(paths.approved_plan),
                 "approved_plan_sha256": approved_plan_meta["approved_plan_sha256"],
+                "plan_cache_hit": plan_cache_hit,
             }
             write_final_summary(paths, summary)
             return summary
@@ -879,6 +1027,7 @@ def run_loop(
         "unresolved_must_fix_count": unresolved_must_fix_count(latest_verification) if latest_verification else 0,
         "approved_plan_path": str(paths.approved_plan),
         "approved_plan_sha256": approved_plan_meta["approved_plan_sha256"],
+        "plan_cache_hit": plan_cache_hit,
     }
     write_final_summary(paths, summary)
     return summary

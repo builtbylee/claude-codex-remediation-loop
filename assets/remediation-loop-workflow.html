@@ -47,8 +47,15 @@
     font-size: 14px;
     color: #94a3b8;
     font-weight: 500;
-    margin-bottom: 36px;
+    margin-bottom: 6px;
     letter-spacing: 0.2px;
+  }
+  .note {
+    text-align: center;
+    font-size: 12px;
+    color: #64748b;
+    font-weight: 500;
+    margin-bottom: 26px;
   }
   .diagram-wrap {
     width: 100%;
@@ -64,6 +71,7 @@
 <div class="slide">
   <h1>Claudex</h1>
   <p class="subtitle">Claude + Codex bounded plan approval and independent verification</p>
+  <p class="note">Fast path: Phase 1 is skipped when the plan matches a cached approved version.</p>
 
   <div class="diagram-wrap">
     <svg viewBox="0 0 960 620" width="100%" height="auto" xmlns="http://www.w3.org/2000/svg">

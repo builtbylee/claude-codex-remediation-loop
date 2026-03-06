@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -205,6 +206,23 @@ sys.stdout.write("implemented\\n")
         self.assertIn("restored", verification["summary"])
         self.assertIn("Do not edit the frozen approved plan", verification["next_actions"][0])
 
+    def test_write_and_load_plan_cache_round_trip(self) -> None:
+        source_plan = "# Plan\n\nShip feature.\n"
+        approved_plan = "# Plan\n\n## Approved plan\n- Ship feature safely.\n"
+        loop.write_plan_cache(source_plan_body=source_plan, approved_plan_body=approved_plan, codex_model="gpt-5.4")
+        loaded = loop.load_plan_cache(plan_body=source_plan, codex_model="gpt-5.4")
+        self.assertIsNotNone(loaded)
+        assert loaded is not None
+        self.assertEqual(loaded["approved_plan_body"], approved_plan)
+        self.assertEqual(loaded["approved_plan_sha256"], loop.sha256_text(approved_plan))
+
+    def test_run_validation_command_captures_timeout(self) -> None:
+        with mock.patch.object(loop.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="slow", timeout=3)):
+            result = loop.run_validation_command(self.root, {"kind": "test", "command": "slow"}, timeout_seconds=3)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["exit_code"], None)
+        self.assertIn("Timed out", result["error"])
+
     def test_cli_resolves_end_to_end_with_stubbed_clis(self) -> None:
         workspace = self.root / "workspace"
         workspace.mkdir()
@@ -232,6 +250,44 @@ sys.stdout.write("implemented\\n")
         self.assertEqual(summary["implementation_iterations_used"], 1)
         self.assertEqual((workspace / "PLAN.md").read_text(encoding="utf-8"), Path(summary["approved_plan_path"]).read_text(encoding="utf-8"))
         self.assertIn("def subtract", (workspace / "calc.py").read_text(encoding="utf-8"))
+
+    def test_cli_reuses_approved_plan_cache_when_plan_is_unchanged(self) -> None:
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+        (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        (workspace / "test_calc.py").write_text(
+            "from calc import add, subtract\n\n"
+            "def test_add():\n    assert add(2, 3) == 5\n\n"
+            "def test_subtract():\n    assert subtract(5, 3) == 2\n",
+            encoding="utf-8",
+        )
+        plan = workspace / "PLAN.md"
+        plan.write_text("# Plan\n\nAdd subtract support.\n", encoding="utf-8")
+        env = self.stub_env()
+
+        first = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "loop", "--plan", str(plan), "--cwd", str(workspace), "--max-iterations", "5"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        self.assertEqual(first.returncode, 0, first.stderr or first.stdout)
+
+        (workspace / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+        second = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "loop", "--plan", str(plan), "--cwd", str(workspace), "--max-iterations", "5"],
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr or second.stdout)
+        summary = json.loads(second.stdout)
+        self.assertEqual(summary["plan_iterations_used"], 0)
+        self.assertTrue(summary["plan_cache_hit"])
+        self.assertEqual(summary["implementation_iterations_used"], 1)
 
     def test_cli_returns_zero_for_explicit_stop_states_and_restores_plan(self) -> None:
         workspace = self.root / "workspace"
