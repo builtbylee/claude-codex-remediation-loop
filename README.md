@@ -45,18 +45,7 @@ In Claude Code:
 
 ## Remediation Loop Workflow
 
-```mermaid
-flowchart LR
-    A["Plan file"] --> B["Codex review<br/>structured findings"]
-    B --> C["Claude implementation pass"]
-    C --> D["Validation<br/>test, lint, build"]
-    D --> E["Codex verification<br/>diff + validation output"]
-    E --> F{"Resolved?"}
-    F -- Yes --> G["Stop: resolved"]
-    F -- No --> H{"Blocked, stagnating,<br/>or iteration 5?"}
-    H -- Yes --> I["Stop: explicit reason"]
-    H -- No --> C
-```
+<img src="./assets/remediation-loop-workflow.png" alt="Remediation loop workflow diagram" width="860" />
 
 ## Use
 
